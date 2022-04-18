@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"knative.dev/net-istio/pkg/reconciler/common"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -110,10 +111,14 @@ func makeSecret(originSecret *corev1.Secret, name, namespace string, labels map[
 
 // MakeTargetSecretLabels returns the labels used in target secret.
 func MakeTargetSecretLabels(originSecretName, originSecretNamespace string) map[string]string {
-	return map[string]string{
+	secretLabels:= map[string]string{
 		networking.OriginSecretNameLabelKey:      originSecretName,
 		networking.OriginSecretNamespaceLabelKey: originSecretNamespace,
 	}
+	if common.ShouldApplyFilter(){
+		secretLabels[common.KnativeUsedbyKey] = "true"
+	}
+	return secretLabels
 }
 
 // targetSecret returns the name of the Secret that is copied from the origin Secret.

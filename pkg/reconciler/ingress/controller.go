@@ -18,11 +18,17 @@ package ingress
 
 import (
 	"context"
-
 	"go.uber.org/zap"
+	v1alpha3 "istio.io/client-go/pkg/apis/networking/v1alpha3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
+	v1 "k8s.io/client-go/informers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	istioclient "knative.dev/net-istio/pkg/client/istio/injection/client"
 	gatewayinformer "knative.dev/net-istio/pkg/client/istio/injection/informers/networking/v1alpha3/gateway"
 	virtualserviceinformer "knative.dev/net-istio/pkg/client/istio/injection/informers/networking/v1alpha3/virtualservice"
+	"knative.dev/net-istio/pkg/reconciler/common"
 	"knative.dev/net-istio/pkg/reconciler/ingress/config"
 	network "knative.dev/networking/pkg"
 	"knative.dev/networking/pkg/apis/networking"
@@ -33,21 +39,17 @@ import (
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
 	endpointsinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/endpoints"
 	podinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/pod"
-	secretinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/secret"
+	secretfilteredinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/secret/filtered"
 	serviceinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/service"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/logging/logkey"
 	"knative.dev/pkg/reconciler"
-
-	v1alpha3 "istio.io/client-go/pkg/apis/networking/v1alpha3"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/cache"
 )
 
 const controllerAgentName = "istio-ingress-controller"
+
 
 type ingressOption func(*Reconciler)
 
@@ -81,8 +83,8 @@ func newControllerWithOptions(
 	logger := logging.FromContext(ctx)
 	virtualServiceInformer := virtualserviceinformer.Get(ctx)
 	gatewayInformer := gatewayinformer.Get(ctx)
-	secretInformer := secretinformer.Get(ctx)
 	serviceInformer := serviceinformer.Get(ctx)
+	secretInformer := getSecretInformer(ctx)
 	ingressInformer := ingressinformer.Get(ctx)
 
 	c := &Reconciler{
@@ -93,6 +95,7 @@ func newControllerWithOptions(
 		secretLister:         secretInformer.Lister(),
 		svcLister:            serviceInformer.Lister(),
 	}
+
 	myFilterFunc := reconciler.AnnotationFilterFunc(networking.IngressClassAnnotationKey, network.IstioIngressClassName, true)
 
 	impl := ingressreconciler.NewImpl(ctx, c, network.IstioIngressClassName, func(impl *controller.Impl) controller.Options {
@@ -144,12 +147,10 @@ func newControllerWithOptions(
 
 	c.tracker = impl.Tracker
 
-	secretInformer.Informer().AddEventHandler(controller.HandleAll(
-		controller.EnsureTypeMeta(
-			c.tracker.OnChanged,
-			corev1.SchemeGroupVersion.WithKind("Secret"),
-		),
-	))
+	ingressInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+		FilterFunc: myFilterFunc,
+		Handler:    controller.HandleAll(impl.Enqueue),
+	})
 
 	gatewayInformer.Informer().AddEventHandler(controller.HandleAll(
 		controller.EnsureTypeMeta(
@@ -178,4 +179,13 @@ func combineFunc(functions ...func(interface{})) func(interface{}) {
 			f(obj)
 		}
 	}
+}
+
+func getSecretInformer(ctx context.Context) v1.SecretInformer {
+	if common.ShouldApplyFilter() {
+		labelSelector := metav1.LabelSelector{MatchLabels: map[string]string{common.KnativeUsedbyKey: "true"}}
+		return secretfilteredinformer.Get(ctx, labels.Set(labelSelector.MatchLabels).String())
+	}
+	// Empty selector should get all resources
+	return secretfilteredinformer.Get(ctx, "")
 }

@@ -24,9 +24,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
-
-	"github.com/spf13/pflag"
 
 	"go.uber.org/automaxprocs/maxprocs" // automatically set GOMAXPROCS based on cgroups
 	"go.uber.org/zap"
@@ -40,7 +39,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 
+
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
+	"knative.dev/pkg/client/injection/kube/informers/factory/filtered"
 	cminformer "knative.dev/pkg/configmap/informer"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/injection"
@@ -120,13 +121,12 @@ var (
 // by name.
 func MainNamed(ctx context.Context, component string, ctors ...injection.NamedControllerConstructor) {
 
-	disabledControllers := pflag.StringSlice("disable-controllers", []string{}, "Comma-separated list of disabled controllers.")
+	disabledControllers := flag.String("disable-controllers", "", "Comma-separated list of disabled controllers.")
 
 	// HACK: This parses flags, so the above should be set once this runs.
 	cfg := injection.ParseAndGetRESTConfigOrDie()
 
-	enabledCtors := enabledControllers(*disabledControllers, ctors)
-
+	enabledCtors := enabledControllers(strings.Split(*disabledControllers, ","), ctors)
 	MainWithConfig(ctx, component, cfg, toControllerConstructors(enabledCtors)...)
 }
 
@@ -202,6 +202,9 @@ func MainWithConfig(ctx context.Context, component string, cfg *rest.Config, cto
 		cfg.Burst = len(ctors) * rest.DefaultBurst
 	}
 
+	labelSelector := metav1.LabelSelector{MatchLabels: map[string]string{"knative.dev/usedByResource": "true"}}
+
+	ctx = filteredFactory.WithSelectors(ctx, labels.Set(labelSelector.MatchLabels).String())
 	ctx, startInformers := injection.EnableInjectionOrDie(ctx, cfg)
 
 	logger, atomicLevel := SetupLoggerOrDie(ctx, component)
@@ -268,7 +271,9 @@ func MainWithConfig(ctx context.Context, component string, cfg *rest.Config, cto
 		wh.InformersHaveSynced()
 	}
 	logger.Info("Starting controllers...")
-	go controller.StartAll(ctx, controllers...)
+	eg.Go(func() error {
+		return controller.StartAll(ctx, controllers...)
+	})
 
 	// This will block until either a signal arrives or one of the grouped functions
 	// returns an error.
