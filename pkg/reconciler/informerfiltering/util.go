@@ -25,8 +25,6 @@ import (
 	filteredFactory "knative.dev/pkg/client/injection/kube/informers/factory/filtered"
 )
 
-const EnableSecretInformerFilteringByCertUIDEnv = "ENABLE_SECRET_INFORMER_FILTERING_BY_CERT_UID"
-
 // ShouldFilterByCertificateUID allows to choose whether to apply filtering on certificate related secrets
 // when list by informers in this component. If not set or set to false no filtering is applied and instead informers
 // will get any secret available in the cluster which may lead to mem issues in large clusters.
